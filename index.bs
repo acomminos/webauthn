@@ -2407,6 +2407,23 @@ When this method is invoked, the user agent MUST execute the following algorithm
             <code>|pkOptions|.{{PublicKeyCredentialRequestOptions/rpId}}</code> when calling {{CredentialsContainer/get()}}.
         </li>
 
+1. Let |hostAppId| be `undefined`. If this ceremony is an [=embedded credential request=],
+    perform the following steps before displaying any other user interface for this ceremony:
+
+    1. Set |hostAppId| to the [=host app identifier=] of the [=host app=].
+
+    1. Run the [$embedded credential request validation procedure$] with arguments
+        <code>|pkOptions|.{{PublicKeyCredentialRequestOptions/rpId}}</code> and |hostAppId|.
+        If the result is [FALSE], throw a "{{NotAllowedError}}" {{DOMException}}
+        without displaying any user interface and without invoking any [=authenticator=].
+
+    1. Display user interface that identifies the [=host app=], and obtain the user's [=user consent|consent=] to continue.
+        If the user does not consent, throw a "{{NotAllowedError}}" {{DOMException}}.
+        This user interface MAY be combined with subsequent user interface for this ceremony,
+        provided that it identifies the [=host app=] before the user performs an [=authorization gesture=].
+
+    1. Set <code>|pkOptions|.{{PublicKeyCredentialRequestOptions/userVerification}}</code> to {{UserVerificationRequirement/required}}.
+
 1. Let |clientExtensions| be a new [=map=] and let |authenticatorExtensions| be a new [=map=].
 
 1. If <code>|pkOptions|.{{PublicKeyCredentialRequestOptions/extensions}}</code> is present, then [=map/for each=]
@@ -2438,6 +2455,8 @@ When this method is invoked, the user agent MUST execute the following algorithm
             :: The [=ascii serialization of an origin|serialization of=] |callerOrigin|'s [=top-level origin=] if
                 the {{PublicKeyCredential/[DISCOVER-METHOD]/sameOriginWithAncestors}}
                 argument passed to this [=internal method=] is [FALSE], else `undefined`.
+            : {{CollectedClientData/hostAppId}}
+            :: |hostAppId|.
     </li>
 
     <li id="GetAssn-SerializeClientDataJSON">
@@ -4052,6 +4071,7 @@ Note: The {{CollectedClientData}} may be extended in the future. Therefore it's 
         required DOMString           origin;
         boolean                      crossOrigin;
         DOMString                    topOrigin;
+        DOMString                    hostAppId;
     };
 
     dictionary TokenBinding {
@@ -4084,6 +4104,10 @@ Note: The {{CollectedClientData}} may be extended in the future. Therefore it's 
     ::  This OPTIONAL member contains the fully qualified [=top-level origin=] of the requester, in the syntax defined
         by [[!RFC6454]]. It is set only if the call was made from context that is not [=same-origin with its
         ancestors=], i.e. if {{CollectedClientData/crossOrigin}} is [TRUE].
+
+    :   <dfn>hostAppId</dfn>
+    ::  This OPTIONAL member contains the [=host app identifier=] of the [=host app=] that made the request.
+        It is set only if the ceremony is an [=embedded credential request=]. See [[#sctn-embedded-credential-requests]].
 
         <!-- Setting explicit dfn ID (this becomes the fragment part of the anchor URL) for backwards compatibility;
              without this Bikeshed generates the ID "collectedclientdata-tokenbinding". -->
@@ -4539,7 +4563,9 @@ Such [=[RPS]=] MUST choose a common [=RP ID=] to use across all ceremonies from 
 A JSON document MUST be hosted at the `webauthn` well-known URL [[!RFC8615]] for the [=RP ID=], and MUST be served using HTTPS. The JSON document MUST be returned as follows:
 
     - The content type MUST be `application/json`.
-    - The top-level JSON object MUST contain a key named `origins` whose value MUST be an array of one or more strings containing web origins.
+    - To enable related origin requests, the top-level JSON object MUST contain a key named `origins` whose value MUST be an array of one or more strings containing web origins.
+
+The same JSON document is used to opt in to [=embedded credential requests=]; see [[#sctn-embedded-credential-requests]].
 
 For example, for the RP ID `example.com`:
 
@@ -4588,6 +4614,71 @@ The <dfn abstract-op>related origins validation procedure</dfn>, given arguments
     1. If |callerOrigin| and |url| are [=same origin=], return [TRUE].
     1. If the [=set/size=] of |labelsSeen| is less than |maxLabels|, [=set/append=] |label| to |labelsSeen|.
 1. Return [FALSE].
+
+## Embedded credential requests ## {#sctn-embedded-credential-requests}
+
+A <dfn>host app</dfn> is an application, other than one the [=client platform=] recognizes as a standalone browser,
+that renders web content and makes [=Web Authentication API=] requests on its behalf,
+for example through an in-app WebView or a browser engine bundled with the application.
+
+An <dfn>embedded credential request</dfn> is an [=authentication ceremony=]
+made through a [=host app=] that is not associated with the [=RP ID=] through a [=client platform=]-specific mechanism
+(for example, Digital Asset Links or `apple-app-site-association`).
+Whether a ceremony is an [=embedded credential request=] is determined by the [=client platform=],
+based on the verified identity of the calling application.
+
+In an [=embedded credential request=], the caller's [=origin=] is supplied by the [=host app=] and cannot be verified by the [=client platform=].
+The [=client platform=] instead conveys the [=host app identifier=] in {{CollectedClientData/hostAppId}},
+and permits the request only if the [=[RP]=] has opted in as described below.
+[=Client platforms=] that do not support [=embedded credential requests=] do not perform them.
+
+A <dfn>host app identifier</dfn> is a string that identifies a [=host app=].
+The [=client platform=] MUST derive it from the verified identity of the [=host app=], such as its code signing identity, and MUST NOT accept it from the [=host app=].
+If a [=host app=] supplies [=client data=] whose {{CollectedClientData/hostAppId}} does not equal its [=host app identifier=],
+the [=client platform=] MUST fail the ceremony with a "{{SecurityError}}" {{DOMException}}.
+A [=host app identifier=] MUST begin with a [=client platform=]-specific namespace followed by U+003A (`:`), for example `android:` or `ios:`,
+and MUST unambiguously identify the publisher of the [=host app=]. It SHOULD NOT include the application's version or any information about the user or [=client device=].
+
+A [=[WRP]=] opts in to [=embedded credential requests=] by including an `embedded` key in the JSON document described in [[#sctn-related-origins]].
+Its value is a JSON object with the following keys:
+
+- `default`: REQUIRED. The string `"deny"`, meaning only [=host apps=] listed in `exceptions` are permitted,
+    or the string `"allow"`, meaning every [=host app=] is permitted except those listed in `exceptions`.
+- `exceptions`: OPTIONAL. An array of [=host app identifiers=]. If absent, it is treated as an empty array.
+
+For example:
+
+<xmp class="json" highlight="json">
+{
+    "embedded": {
+        "default": "deny",
+        "exceptions": [
+            "android:com.example.partner:xA2K8aYJFh0kLQPD6...",
+            "ios:T84QZS65DQ.com.example.partner"
+        ]
+    }
+}
+</xmp>
+
+The [=client platform=] MUST fetch this document using its own network stack, not the [=host app=]'s.
+It MAY cache the response, and SHOULD bound the lifetime of a cached response.
+
+Where a [=client platform=] can determine in advance that no [=embedded credential request=] from a [=host app=] will be permitted,
+it MAY decline to expose the [=Web Authentication API=] to that [=host app=]'s content.
+
+### Validating Embedded Credential Requests ### {#sctn-validating-embedded-credential-requests}
+
+The <dfn abstract-op>embedded credential request validation procedure</dfn>, given arguments |rpIdRequested| and |hostAppId|, is as follows:
+
+1. Fetch the `webauthn` well-known URL [[!RFC8615]] for the RP ID |rpIdRequested| as described in [[#sctn-related-origins]].
+    If the fetch fails, the response does not have a content type of `application/json`,
+    does not have a status code (after following redirects) of 200, or its body is not a valid JSON object, return [FALSE].
+1. Let |embedded| be the value of the `embedded` property of the JSON object. If |embedded| is not a JSON object, return [FALSE].
+1. Let |default| be the value of the `default` property of |embedded|. If |default| is neither `"allow"` nor `"deny"`, return [FALSE].
+1. Let |exceptions| be the value of the `exceptions` property of |embedded|, or an empty array if it is missing.
+    If |exceptions| is not an array of strings, return [FALSE].
+1. Let |listed| be [TRUE] if |exceptions| contains |hostAppId|, and [FALSE] otherwise.
+1. If |default| is `"deny"`, return |listed|. Otherwise, return the negation of |listed|.
 
 # WebAuthn <dfn>Authenticator Model</dfn> # {#sctn-authenticator-model}
 
@@ -6205,6 +6296,13 @@ a numbered step. If outdented, it (today) is rendered as a bullet in the midst o
     1. Verify that the value of <code>|C|.{{CollectedClientData/topOrigin}}</code> matches the [=origin=] of a page
         that the [=[RP]=] expects to be sub-framed within.
         See [[#sctn-validating-origin]] for guidance.
+
+1. If <code>|C|.{{CollectedClientData/hostAppId}}</code> is present, verify that it identifies a [=host app=]
+    that the [=[RP]=] permits to make [=embedded credential requests=] on its behalf.
+
+    Note: In an [=embedded credential request=], <code>|C|.{{CollectedClientData/origin}}</code> is supplied by the [=host app=].
+    Since [=client platforms=] may cache the policy described in [[#sctn-embedded-credential-requests]],
+    a [=[RP]=] whose policy lists `exceptions` should enforce the same policy in this step.
 
 <!-- Note: this next step is actually a top-level step, but bikeshed wanted it indented this much in order to render it as
 a numbered step. If outdented, it (today) is rendered as a bullet in the midst of a numbered list :-/
@@ -8728,7 +8826,7 @@ This section registers the following well-known URI in the
 IANA "Well-Known URIs" registry [[!IANA-Well-Known-URIs]].
 
 - URI Suffix: <code>webauthn</code>
-- Reference: Section [[#sctn-validating-relation-origin]] of this specification
+- Reference: Sections [[#sctn-validating-relation-origin]] and [[#sctn-validating-embedded-credential-requests]] of this specification
 - Status: permanent
 - Change Controller: W3C Web Authentication Working Group (public-webauthn@w3.org)
 - Related Information: (none)
@@ -8850,6 +8948,17 @@ alters the trust model of the [=Web Authentication API=] in the following ways:
 [=User agents=] that grant this extension SHOULD clearly communicate to users when a
 remote-desktop-proxied WebAuthn operation is in progress, so that users understand
 that their authenticator is being used on behalf of a remotely hosted application.
+
+### Embedded Credential Requests ### {#sctn-embedded-credential-requests-security}
+
+[=Embedded credential requests=] let [=host apps=] that can inspect and modify the web content they render make requests on behalf of an [=RP ID=]
+they are not associated with. {{CollectedClientData/origin}} is supplied by the [=host app=] and cannot identify the requesting party;
+{{CollectedClientData/hostAppId}} is the member the [=client platform=] vouches for, and because the [=client platform=] computes the
+[=hash of the serialized client data=] itself, the [=assertion signature=] covers it.
+[=[RPS]=] limit phishing risk by permitting only [=host apps=] they trust, or by denying [=host apps=] known to be malicious;
+the required [=host app=] identification, [=user consent|consent=], and [=user verification=] prevent silent ceremonies but not social engineering.
+A permitted [=host app=] can still observe the page and the resulting session.
+Like {{CollectedClientData/origin}}, {{CollectedClientData/hostAppId}} might not hold if the [=client device=] is compromised.
 
 
 ## Security considerations for [=[RPS]=] ## {#sctn-security-considerations-rp}
@@ -9322,6 +9431,14 @@ For example, given the [=RP ID=] `examplepay.com` with a calling origin of `http
 and a [=top-level origin=] of `https://example.com`,
 a [=WebAuthn client=] and/or [=client platform=] could show the user:
 "Sign in with your passkey to examplepay.com? Example.com will know you are signing in to examplepay.com."
+
+### Host App Identification ### {#sctn-host-app-privacy}
+
+A [=host app=] that renders a [=[RP]=]'s content may learn whether the user has a [=credential=] for that [=[RP]=]
+by observing a successful [=embedded credential request=]; [=client platforms=] mitigate this by identifying the [=host app=]
+and obtaining the user's [=user consent|consent=] first.
+{{CollectedClientData/hostAppId}} discloses the identity of the [=host app=], but not of the user, to [=[RPS]=] that have opted in.
+[=Client platforms=] MUST NOT set it for applications they recognize as standalone browsers.
  
 ## Privacy considerations for [=[RPS]=] ## {#sctn-privacy-considerations-rp}
 
